@@ -12,7 +12,8 @@
     "cap:open": "cap open android",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "vercel-build": "vite build"
   },
   "dependencies": {
     "@capacitor/core": "^8.5.2",

@@ -4,8 +4,7 @@
  */
 
 const CANDIDATE_BACKEND_URLS = [
-  'https://ais-dev-gu2eswnfzklfkgpvhzb4br-584946353104.europe-west2.run.app',
-  'https://ais-pre-gu2eswnfzklfkgpvhzb4br-584946353104.europe-west2.run.app',
+  'https://yksmezunlatest-93kw.vercel.app',
 ];
 
 const BACKEND_URL_KEY = 'mezun_backend_server_url';

@@ -1,0 +1,6 @@
+{
+  "name": "Mezun Tycoon: YKS Simülatörü",
+  "description": "Mezuna kalan bir öğrencinin YKS maratonu: kaynak biriktirme, stres yönetimi, deneme sınavları, karakter özelleştirme ve sosyal medya simülasyonu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

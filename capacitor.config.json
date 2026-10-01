@@ -1,0 +1,8 @@
+{
+  "appId": "com.mezunyks.app",
+  "appName": "Mezun YKS Tycoon",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

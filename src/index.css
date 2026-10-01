@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+:root {
+  --bg-primary: #10b981;
+  --bg-primary-rgb: 16, 185, 129;
+  --text-accent: #34d399;
+  --text-accent-rgb: 52, 211, 153;
+  --theme-glow: rgba(16, 185, 129, 0.25);
+  --theme-border: rgba(16, 185, 129, 0.4);
+}
+
+/* Dynamic theme helper utility classes using CSS variables */
+.theme-bg-primary {
+  background-color: var(--bg-primary);
+}
+
+.theme-text-accent {
+  color: var(--text-accent);
+}
+
+.theme-border-accent {
+  border-color: var(--theme-border);
+}
+
+.theme-glow-card {
+  box-shadow: 0 0 24px var(--theme-glow);
+  border-color: var(--theme-border);
+}
+
+.theme-gradient-overlay {
+  background: radial-gradient(circle at 50% 0%, rgba(var(--bg-primary-rgb), 0.18) 0%, transparent 70%);
+}
+
+@keyframes toastCountdown {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+
+/* Light Mode Overrides for Slate Grays */
+html.light-mode {
+  color-scheme: light;
+}
+
+html.light-mode body {
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
+
+html.light-mode .bg-slate-950 {
+  background-color: #f8fafc !important;
+}
+
+html.light-mode .bg-slate-900 {
+  background-color: #ffffff !important;
+}
+
+html.light-mode .bg-slate-900\/95,
+html.light-mode .bg-slate-900\/90,
+html.light-mode .bg-slate-900\/80,
+html.light-mode .bg-slate-900\/60,
+html.light-mode .bg-slate-900\/50 {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+}
+
+html.light-mode .bg-slate-800 {
+  background-color: #f1f5f9 !important;
+}
+
+html.light-mode .bg-slate-800\/60,
+html.light-mode .bg-slate-800\/80 {
+  background-color: #e2e8f0 !important;
+}
+
+html.light-mode .border-slate-800,
+html.light-mode .border-slate-800\/80,
+html.light-mode .border-slate-800\/60,
+html.light-mode .border-slate-700,
+html.light-mode .border-slate-700\/80 {
+  border-color: #cbd5e1 !important;
+}
+
+html.light-mode .text-slate-100,
+html.light-mode .text-white {
+  color: #0f172a !important;
+}
+
+html.light-mode .text-slate-200,
+html.light-mode .text-slate-300 {
+  color: #334155 !important;
+}
+
+html.light-mode .text-slate-400 {
+  color: #64748b !important;
+}
+
+html.light-mode .text-slate-500 {
+  color: #94a3b8 !important;
+}

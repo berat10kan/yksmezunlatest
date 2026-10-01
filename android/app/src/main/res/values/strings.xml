@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Mezun YKS Tycoon</string>
+    <string name="title_activity_main">Mezun YKS Tycoon</string>
+    <string name="package_name">com.mezunyks.app</string>
+    <string name="custom_url_scheme">com.mezunyks.app</string>
+</resources>

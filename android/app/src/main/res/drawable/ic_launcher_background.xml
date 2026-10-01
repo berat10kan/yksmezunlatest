@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportHeight="108"
+    android:viewportWidth="108">
+    <!-- Deep night gradient-style base -->
+    <path
+        android:fillColor="#0B132B"
+        android:pathData="M0,0h108v108h-108z" />
+
+    <!-- Subtle radial glow behind the emblem -->
+    <path
+        android:fillColor="#1E293B"
+        android:pathData="M54,54m-42,0a42,42 0,1 1,84 0a42,42 0,1 1,-84 0" />
+
+    <path
+        android:fillColor="#312E81"
+        android:pathData="M54,54m-30,0a30,30 0,1 1,60 0a30,30 0,1 1,-60 0" />
+
+    <!-- Isometric study desk lines / grid glow -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M18,88L90,88"
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="1.5" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M30,94L78,94"
+        android:strokeColor="#6366F1"
+        android:strokeWidth="1" />
+
+    <!-- Golden star accent top right -->
+    <path
+        android:fillColor="#FBBF24"
+        android:pathData="M84,24L86,29L91,29L87,32L88.5,37L84,34L79.5,37L81,32L77,29L82,29Z" />
+    <path
+        android:fillColor="#FDE68A"
+        android:pathData="M24,32L25,35L28,35L25.5,37L26.5,40L24,38L21.5,40L22.5,37L20,35L23,35Z" />
+</vector>

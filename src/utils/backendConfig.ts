@@ -4,7 +4,7 @@
  */
 
 const CANDIDATE_BACKEND_URLS = [
-  'https://yksmezunlatest-93kw.vercel.app',
+  'https://yksmezunlatest.vercel.app',
 ];
 
 const BACKEND_URL_KEY = 'mezun_backend_server_url';

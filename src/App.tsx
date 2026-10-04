@@ -27,7 +27,12 @@ import {
 import { SOCIAL_AVATARS } from './data/socialMediaData';
 import { MUSIC_BUFFS, detectGenreFromTrack } from './data/musicData';
 import { sounds } from './utils/audio';
-import { getBackendBaseUrl } from './utils/backendConfig';
+import { getBackendBaseUrl, fetchFromBackend } from './utils/backendConfig';
+import {
+  exchangeSpotifyTokenPKCE,
+  fetchCurrentSpotifyTrackDirect,
+  refreshSpotifyTokenPKCE,
+} from './utils/spotifyPKCE';
 import { MobileFrame } from './components/MobileFrame';
 import { TopStatusBar } from './components/TopStatusBar';
 import { ActiveTab, BottomNavBar } from './components/BottomNavBar';
@@ -122,24 +127,39 @@ export default function App() {
           window.history.replaceState({}, document.title, window.location.pathname);
         } else if (code) {
           window.history.replaceState({}, document.title, window.location.pathname);
-          const baseUrl = getBackendBaseUrl();
           triggerToast('🎧 Spotify kodu doğrulanıyor...');
-          const exchangeRes = await fetch(`${baseUrl}/api/spotify/exchange-token`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code }),
-          });
-
-          if (exchangeRes.ok) {
-            const tokenData = await exchangeRes.json();
+          try {
+            // 1. Direct PKCE exchange (works completely without server!)
+            const tokenData = await exchangeSpotifyTokenPKCE(code);
             localStorage.setItem('mezun_spotify_access_token', tokenData.access_token);
             if (tokenData.refresh_token) {
               localStorage.setItem('mezun_spotify_refresh_token', tokenData.refresh_token);
             }
             sounds.playSuccess();
             triggerToast('🎉 Spotify hesabın başarıyla bağlandı!');
-          } else {
-            triggerToast('Spotify bağlantısı tamamlanamadı.');
+          } catch {
+            // 2. Fallback to backend exchange
+            try {
+              const exchangeRes = await fetchFromBackend('/api/spotify/exchange-token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code }),
+              });
+
+              if (exchangeRes.ok) {
+                const tokenData = await exchangeRes.json();
+                localStorage.setItem('mezun_spotify_access_token', tokenData.access_token);
+                if (tokenData.refresh_token) {
+                  localStorage.setItem('mezun_spotify_refresh_token', tokenData.refresh_token);
+                }
+                sounds.playSuccess();
+                triggerToast('🎉 Spotify hesabın başarıyla bağlandı!');
+              } else {
+                triggerToast('Spotify bağlantısı tamamlanamadı.');
+              }
+            } catch {
+              triggerToast('Spotify bağlantısı tamamlanamadı.');
+            }
           }
         }
       } catch (err) {
@@ -161,55 +181,84 @@ export default function App() {
       if (!token) return;
 
       try {
-        const baseUrl = getBackendBaseUrl();
-        const res = await fetch(`${baseUrl}/api/spotify/current-track`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        let rawTrack: any = null;
+        let isPlaying = false;
 
-        if (res.status === 401) {
-          // Token expired, clear invalid session
-          localStorage.removeItem('mezun_spotify_access_token');
-          return;
+        // Try direct Spotify Web API call first
+        try {
+          const direct = await fetchCurrentSpotifyTrackDirect(token);
+          rawTrack = direct.track;
+          isPlaying = direct.isPlaying;
+        } catch (directErr: any) {
+          if (directErr.message === 'TOKEN_EXPIRED') {
+            const refreshToken = localStorage.getItem('mezun_spotify_refresh_token');
+            if (refreshToken) {
+              try {
+                const refreshed = await refreshSpotifyTokenPKCE(refreshToken);
+                localStorage.setItem('mezun_spotify_access_token', refreshed.access_token);
+                const retry = await fetchCurrentSpotifyTrackDirect(refreshed.access_token);
+                rawTrack = retry.track;
+                isPlaying = retry.isPlaying;
+              } catch {
+                localStorage.removeItem('mezun_spotify_access_token');
+                return;
+              }
+            } else {
+              localStorage.removeItem('mezun_spotify_access_token');
+              return;
+            }
+          } else {
+            // Fallback to backend route
+            const res = await fetchFromBackend('/api/spotify/current-track', {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (res.status === 401) {
+              localStorage.removeItem('mezun_spotify_access_token');
+              return;
+            }
+            if (res.ok) {
+              const data = await res.json();
+              rawTrack = data.track;
+              isPlaying = data.isPlaying;
+            }
+          }
         }
 
-        if (res.ok && isMounted) {
-          const data = await res.json();
-          if (data && data.track) {
-            const detected = detectGenreFromTrack(
-              data.track.name,
-              data.track.artist,
-              data.track.albumName || '',
-              data.track.artistGenres || []
-            );
+        if (rawTrack && isMounted) {
+          const detected = detectGenreFromTrack(
+            rawTrack.name,
+            rawTrack.artist,
+            rawTrack.albumName || '',
+            rawTrack.artistGenres || []
+          );
 
-            const trackWithGenre: SpotifyTrack = {
-              ...data.track,
-              detectedGenre: detected,
-            };
+          const trackWithGenre: SpotifyTrack = {
+            ...rawTrack,
+            detectedGenre: detected,
+          };
 
-            setCurrentSpotifyTrack(trackWithGenre);
+          setCurrentSpotifyTrack(trackWithGenre);
 
-            // Automatically apply buff if track changed or active genre differs
-            const trackKey = `${data.track.id}_${detected}`;
-            if (lastDetectedTrackKeyRef.current !== trackKey) {
-              lastDetectedTrackKeyRef.current = trackKey;
+          // Automatically apply buff if track changed or active genre differs
+          const trackKey = `${rawTrack.name}_${rawTrack.artist}_${detected}`;
+          if (lastDetectedTrackKeyRef.current !== trackKey) {
+            lastDetectedTrackKeyRef.current = trackKey;
 
-              setGameState(prev => {
-                if (prev.activeMusicGenre !== detected) {
-                  const buff = MUSIC_BUFFS[detected] || MUSIC_BUFFS.LO_FI;
-                  sounds.playSuccess();
-                  triggerToast(
-                    `🎧 Spotify: "${data.track.name}" (${data.track.artist}) algılandı! [${buff.name}: ${buff.badge}] aktif!`
-                  );
+            setGameState(prev => {
+              if (prev.activeMusicGenre !== detected) {
+                const buff = MUSIC_BUFFS[detected] || MUSIC_BUFFS.LO_FI;
+                sounds.playSuccess();
+                triggerToast(
+                  `🎧 Spotify: "${rawTrack.name}" (${rawTrack.artist}) algılandı! [${buff.name}: ${buff.badge}] aktif!`
+                );
 
-                  return {
-                    ...prev,
-                    activeMusicGenre: detected,
-                  };
-                }
-                return prev;
-              });
-            }
+                return {
+                  ...prev,
+                  activeMusicGenre: detected,
+                };
+              }
+              return prev;
+            });
           }
         }
       } catch {

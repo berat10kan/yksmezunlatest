@@ -11,52 +11,115 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function startServer() {
-  const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
-  const isProd = process.env.NODE_ENV === 'production';
+const isPlaceholder = (val?: string) =>
+  !val ||
+  val === 'MY_SPOTIFY_CLIENT_ID' ||
+  val === 'MY_SPOTIFY_CLIENT_SECRET' ||
+  val === 'your_spotify_client_id_here' ||
+  val.trim() === '';
 
-  app.use(express.json());
+const getSpotifyClientId = (): string | null => {
+  // 1. Direct standard env vars
+  const direct =
+    process.env.SPOTIFY_CLIENT_ID ||
+    process.env.SPOTIFY_ID ||
+    process.env.VITE_SPOTIFY_CLIENT_ID;
 
-  // Enable CORS for API requests from Android WebView (https://localhost / capacitor://localhost)
-  app.use((req: Request, res: Response, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-    if (req.method === 'OPTIONS') {
-      return res.sendStatus(200);
+  if (direct && !isPlaceholder(direct)) {
+    const clean = direct.replace(/^SPOTIFY_CLIENT_ID[:=_ -]?/i, '').trim();
+    if (clean) return clean;
+  }
+
+  // 2. Scan all process.env values in case it was saved in a generic key like "Key" or "spotify"
+  for (const [key, val] of Object.entries(process.env)) {
+    if (!val || typeof val !== 'string' || isPlaceholder(val)) continue;
+    if (val.startsWith('SPOTIFY_CLIENT_ID')) {
+      const extracted = val.replace(/^SPOTIFY_CLIENT_ID[:=_ -]?/i, '').trim();
+      if (/^[a-f0-9]{32}$/i.test(extracted)) {
+        return extracted;
+      }
     }
-    next();
-  });
-
-  // Helper to determine redirect URI for Spotify OAuth
-  const getRedirectUri = (req: Request) => {
-    if (process.env.APP_URL) {
-      const cleanUrl = process.env.APP_URL.replace(/\/+$/, '');
-      return `${cleanUrl}/auth/callback`;
+    if (key.toLowerCase() === 'spotify' && /^[a-f0-9]{32}$/i.test(val.trim())) {
+      return val.trim();
     }
-    const host = req.get('host') || `localhost:${PORT}`;
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-    return `${protocol}://${host}/auth/callback`;
-  };
+  }
+
+  return null;
+};
+
+const getSpotifyClientSecret = (): string | null => {
+  // 1. Direct standard env vars
+  const direct =
+    process.env.SPOTIFY_CLIENT_SECRET ||
+    process.env.SPOTIFY_SECRET ||
+    process.env.VITE_SPOTIFY_CLIENT_SECRET;
+
+  if (direct && !isPlaceholder(direct)) {
+    const clean = direct.replace(/^SPOTIFY_CLIENT_SECRET[:=_ -]?/i, '').trim();
+    if (clean) return clean;
+  }
+
+  // 2. Scan all process.env values
+  for (const [, val] of Object.entries(process.env)) {
+    if (!val || typeof val !== 'string' || isPlaceholder(val)) continue;
+    if (val.startsWith('SPOTIFY_CLIENT_SECRET')) {
+      const extracted = val.replace(/^SPOTIFY_CLIENT_SECRET[:=_ -]?/i, '').trim();
+      if (/^[a-f0-9]{32}$/i.test(extracted)) {
+        return extracted;
+      }
+    }
+  }
+
+  return null;
+};
+
+const app = express();
+const PORT = Number(process.env.PORT) || 3000;
+
+app.use(express.json());
+
+// Enable CORS for API requests from Android WebView (https://localhost / capacitor://localhost) and Vercel/external domains
+app.use((req: Request, res: Response, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Helper to determine redirect URI for Spotify OAuth
+const getRedirectUri = (req: Request) => {
+  if (process.env.APP_URL) {
+    const cleanUrl = process.env.APP_URL.replace(/\/+$/, '');
+    return `${cleanUrl}/auth/callback`;
+  }
+  const host = req.get('host') || `localhost:${PORT}`;
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  return `${protocol}://${host}/auth/callback`;
+};
 
   // 1. Spotify OAuth Configuration & Status
   app.get('/api/spotify/status', (req: Request, res: Response) => {
-    const isConfigured = Boolean(process.env.SPOTIFY_CLIENT_ID);
+    const clientId = getSpotifyClientId();
+    const clientSecret = getSpotifyClientSecret();
+    const isConfigured = Boolean(clientId && clientSecret);
     const redirectUri = getRedirectUri(req);
     res.json({
+      status: 'online',
       configured: isConfigured,
-      clientId: process.env.SPOTIFY_CLIENT_ID || null,
+      clientId: isConfigured ? clientId : null,
       redirectUri,
     });
   });
 
   // 2. Generate Spotify Authorization URL
   app.get('/api/spotify/auth-url', (req: Request, res: Response) => {
-    const clientId = process.env.SPOTIFY_CLIENT_ID;
+    const clientId = getSpotifyClientId();
     if (!clientId) {
       return res.status(400).json({
-        error: 'SPOTIFY_CLIENT_ID is not configured in environment variables.',
+        error: 'SPOTIFY_CLIENT_ID sunucuda tanımlanmamış. Vercel veya .env dosyasında geçerli bir SPOTIFY_CLIENT_ID ve SPOTIFY_CLIENT_SECRET belirleyin.',
       });
     }
 
@@ -177,12 +240,12 @@ async function startServer() {
   app.post('/api/spotify/exchange-token', async (req: Request, res: Response) => {
     try {
       const { code } = req.body;
-      const clientId = process.env.SPOTIFY_CLIENT_ID;
-      const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+      const clientId = getSpotifyClientId();
+      const clientSecret = getSpotifyClientSecret();
 
       if (!clientId || !clientSecret) {
         return res.status(400).json({
-          error: 'Spotify Client ID veya Secret sunucuda tanımlanmamış.',
+          error: 'Spotify Client ID veya Secret sunucuda tanımlanmamış. Vercel Environment Variables ayarlarını kontrol edin.',
         });
       }
 
@@ -412,24 +475,35 @@ SADECE geçerli bir JSON objesi döndür, markdown veya başka açıklama ekleme
     }
   });
 
-  // 7. Vite middleware for frontend development
+export default app;
+
+const isVercel = Boolean(process.env.VERCEL || process.env.NOW_REGION);
+
+if (!isVercel) {
+  const isProd = process.env.NODE_ENV === 'production';
+
   if (!isProd) {
-    const vite = await createViteServer({
+    createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
-    });
-    app.use(vite.middlewares);
+    })
+      .then(vite => {
+        app.use(vite.middlewares);
+        app.listen(PORT, '0.0.0.0', () => {
+          console.log(`[Mezun Tycoon Server] Running on http://0.0.0.0:${PORT}`);
+        });
+      })
+      .catch(err => {
+        console.error('[Vite Server Init Error]:', err);
+      });
   } else {
-    // Production static files
     app.use(express.static(path.resolve(__dirname, 'dist')));
     app.get('*', (req: Request, res: Response) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`[Mezun Tycoon Server] Running on http://0.0.0.0:${PORT}`);
+    });
   }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Mezun Tycoon Server] Running on http://0.0.0.0:${PORT}`);
-  });
 }
 
-startServer();

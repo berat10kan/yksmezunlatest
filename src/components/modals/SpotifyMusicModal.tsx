@@ -25,8 +25,22 @@ import {
   fetchFromBackend,
   autoDiscoverWorkingBackendUrl,
   isNativeAndroidApp,
+  checkBackendHealth,
+  getBackendBaseUrl,
+  setBackendBaseUrl,
+  BackendHealthInfo,
 } from '../../utils/backendConfig';
-import { Smartphone, ExternalLink, Globe } from 'lucide-react';
+import {
+  createSpotifyAuthUrl,
+  exchangeSpotifyTokenPKCE,
+  fetchCurrentSpotifyTrackDirect,
+  refreshSpotifyTokenPKCE,
+  getStoredSpotifyClientId,
+  setStoredSpotifyClientId,
+  getEffectiveRedirectUri,
+  DEFAULT_SPOTIFY_CLIENT_ID,
+} from '../../utils/spotifyPKCE';
+import { Smartphone, ExternalLink, Globe, Server, Settings2, Check, AlertCircle } from 'lucide-react';
 
 interface SpotifyMusicModalProps {
   isOpen: boolean;
@@ -65,8 +79,12 @@ export const SpotifyMusicModal: React.FC<SpotifyMusicModalProps> = ({
   const [redirectUri, setRedirectUri] = useState<string>('');
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [customServerInput, setCustomServerInput] = useState('');
+  const [customServerInput, setCustomServerInput] = useState(() => localStorage.getItem('mezun_backend_server_url') || '');
   const [showServerSettings, setShowServerSettings] = useState(false);
+  const [activeServerUrl, setActiveServerUrl] = useState<string>(() => getBackendBaseUrl());
+  const [serverHealth, setServerHealth] = useState<BackendHealthInfo | null>(null);
+  const [testingServer, setTestingServer] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
   const isApk = isNativeAndroidApp();
 
   // Check server spotify status on mount
@@ -75,18 +93,16 @@ export const SpotifyMusicModal: React.FC<SpotifyMusicModalProps> = ({
 
     const checkStatus = async () => {
       setIsCheckingServer(true);
-      try {
-        const res = await fetchFromBackend('/api/spotify/status');
-        if (res.ok) {
-          const data = await res.json();
-          setServerConfigured(data.configured);
-          setRedirectUri(data.redirectUri || `${window.location.origin}/auth/callback`);
-        }
-      } catch {
-        setServerConfigured(false);
-      } finally {
-        setIsCheckingServer(false);
+      const health = await checkBackendHealth();
+      setServerHealth(health);
+      setServerConfigured(health.configured);
+      setActiveServerUrl(health.url || (typeof window !== 'undefined' ? window.location.origin : ''));
+      if (health.redirectUri) {
+        setRedirectUri(health.redirectUri);
+      } else {
+        setRedirectUri(`${window.location.origin}/auth/callback`);
       }
+      setIsCheckingServer(false);
 
       // Check if we have a saved token
       const savedToken = localStorage.getItem(SPOTIFY_TOKEN_KEY);
@@ -98,6 +114,49 @@ export const SpotifyMusicModal: React.FC<SpotifyMusicModalProps> = ({
 
     checkStatus();
   }, [isOpen]);
+
+  const handleTestAndSaveServer = async (targetUrl: string) => {
+    if (!targetUrl || !targetUrl.trim()) {
+      setTestResult('Lütfen geçerli bir sunucu URL adresi girin.');
+      return;
+    }
+    setTestingServer(true);
+    setTestResult('Sunucuya bağlanılıyor ve test ediliyor...');
+    const cleanUrl = targetUrl.trim().replace(/\/+$/, '');
+    const health = await checkBackendHealth(cleanUrl);
+    setTestingServer(false);
+
+    if (health.isOnline) {
+      setBackendBaseUrl(cleanUrl);
+      setActiveServerUrl(cleanUrl);
+      setServerHealth(health);
+      setServerConfigured(health.configured);
+      if (health.redirectUri) setRedirectUri(health.redirectUri);
+      sounds.playSuccess();
+      setTestResult(
+        `✅ Sunucu aktif! (${health.configured ? 'Spotify API hazır' : 'Uyarı: Sunucuda SPOTIFY_CLIENT_ID tanımlanmamış'})`
+      );
+      setStatusMessage(`Aktif sunucu güncellendi: ${cleanUrl}`);
+    } else {
+      sounds.playTap();
+      setTestResult(`❌ Bağlantı hatası: ${health.error || 'Sunucuya ulaşılamadı'}. Lütfen Vercel URL'sini kontrol edin.`);
+    }
+  };
+
+  const handleResetToAuto = async () => {
+    setBackendBaseUrl('');
+    setCustomServerInput('');
+    setTestResult(null);
+    sounds.playTap();
+    setIsCheckingServer(true);
+    const health = await checkBackendHealth('');
+    setServerHealth(health);
+    setServerConfigured(health.configured);
+    setActiveServerUrl(health.url || (typeof window !== 'undefined' ? window.location.origin : ''));
+    if (health.redirectUri) setRedirectUri(health.redirectUri);
+    setIsCheckingServer(false);
+    setStatusMessage('Sunucu otomatik algılama moduna alındı.');
+  };
 
   // Listen for OAuth callback message from popup
   useEffect(() => {
@@ -113,28 +172,38 @@ export const SpotifyMusicModal: React.FC<SpotifyMusicModalProps> = ({
         if (code) {
           try {
             setStatusMessage('Yetkilendirme kodu doğrulanıyor...');
-            const exchangeRes = await fetchFromBackend('/api/spotify/exchange-token', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ code }),
-            });
+            let tokenData: any = null;
 
-            if (!exchangeRes.ok) {
-              const errData = await exchangeRes.json();
-              throw new Error(errData.error || 'Token değişimi başarısız oldu');
+            // 1. Direct PKCE exchange (no server required!)
+            try {
+              tokenData = await exchangeSpotifyTokenPKCE(code, undefined, redirectUri);
+            } catch {
+              // 2. Fallback to backend exchange
+              const exchangeRes = await fetchFromBackend('/api/spotify/exchange-token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code }),
+              });
+
+              if (!exchangeRes.ok) {
+                const errData = await exchangeRes.json().catch(() => ({}));
+                throw new Error(errData.error || 'Token değişimi başarısız oldu');
+              }
+              tokenData = await exchangeRes.json();
             }
 
-            const tokenData = await exchangeRes.json();
-            localStorage.setItem(SPOTIFY_TOKEN_KEY, tokenData.access_token);
-            if (tokenData.refresh_token) {
-              localStorage.setItem(SPOTIFY_REFRESH_KEY, tokenData.refresh_token);
-            }
+            if (tokenData && tokenData.access_token) {
+              localStorage.setItem(SPOTIFY_TOKEN_KEY, tokenData.access_token);
+              if (tokenData.refresh_token) {
+                localStorage.setItem(SPOTIFY_REFRESH_KEY, tokenData.refresh_token);
+              }
 
-            setIsConnected(true);
-            setIsConnecting(false);
-            setStatusMessage('Spotify hesabın başarıyla bağlandı! 🎧');
-            sounds.playSuccess();
-            fetchNowPlaying(tokenData.access_token);
+              setIsConnected(true);
+              setIsConnecting(false);
+              setStatusMessage('Spotify hesabın başarıyla bağlandı! 🎧');
+              sounds.playSuccess();
+              fetchNowPlaying(tokenData.access_token);
+            }
           } catch (err: any) {
             setStatusMessage(`Hata: ${err.message}`);
             setIsConnecting(false);
@@ -170,7 +239,7 @@ export const SpotifyMusicModal: React.FC<SpotifyMusicModalProps> = ({
     checkUrlForCode();
 
     return () => window.removeEventListener('message', handleOAuthMessage);
-  }, []);
+  }, [redirectUri]);
 
   // Fetch currently playing track from Spotify API
   const fetchNowPlaying = async (token?: string) => {
@@ -178,47 +247,84 @@ export const SpotifyMusicModal: React.FC<SpotifyMusicModalProps> = ({
     if (!authToken) return;
 
     try {
-      const res = await fetchFromBackend('/api/spotify/current-track', {
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      });
+      let rawTrack: any = null;
+      let isPlayingTrack = false;
 
-      if (res.status === 401) {
-        setIsConnected(false);
-        localStorage.removeItem(SPOTIFY_TOKEN_KEY);
-        setStatusMessage('Oturum süresi doldu, lütfen tekrar bağlan.');
-        return;
+      // 1. Direct Spotify API call (zero backend dependency)
+      try {
+        const direct = await fetchCurrentSpotifyTrackDirect(authToken);
+        rawTrack = direct.track;
+        isPlayingTrack = direct.isPlaying;
+      } catch (directErr: any) {
+        if (directErr.message === 'TOKEN_EXPIRED') {
+          const refreshToken = localStorage.getItem(SPOTIFY_REFRESH_KEY);
+          if (refreshToken) {
+            try {
+              const refreshed = await refreshSpotifyTokenPKCE(refreshToken);
+              localStorage.setItem(SPOTIFY_TOKEN_KEY, refreshed.access_token);
+              const retry = await fetchCurrentSpotifyTrackDirect(refreshed.access_token);
+              rawTrack = retry.track;
+              isPlayingTrack = retry.isPlaying;
+            } catch {
+              setIsConnected(false);
+              localStorage.removeItem(SPOTIFY_TOKEN_KEY);
+              setStatusMessage('Oturum süresi doldu, lütfen tekrar bağlanın.');
+              return;
+            }
+          } else {
+            setIsConnected(false);
+            localStorage.removeItem(SPOTIFY_TOKEN_KEY);
+            setStatusMessage('Oturum süresi doldu, lütfen tekrar bağlanın.');
+            return;
+          }
+        } else {
+          // Fallback to backend route
+          const res = await fetchFromBackend('/api/spotify/current-track', {
+            headers: {
+              Authorization: `Bearer ${authToken}`,
+            },
+          });
+
+          if (res.status === 401) {
+            setIsConnected(false);
+            localStorage.removeItem(SPOTIFY_TOKEN_KEY);
+            setStatusMessage('Oturum süresi doldu, lütfen tekrar bağlan.');
+            return;
+          }
+
+          if (res.ok) {
+            const data = await res.json();
+            rawTrack = data.track;
+            isPlayingTrack = data.isPlaying;
+          }
+        }
       }
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data.track) {
-          // Detect genre using both title keywords and Spotify artist genres
-          const detected = detectGenreFromTrack(
-            data.track.name,
-            data.track.artist,
-            data.track.albumName || '',
-            data.track.artistGenres || []
-          );
+      if (rawTrack) {
+        // Detect genre using both title keywords and Spotify artist genres
+        const detected = detectGenreFromTrack(
+          rawTrack.name,
+          rawTrack.artist,
+          rawTrack.albumName || '',
+          rawTrack.artistGenres || []
+        );
 
-          const trackWithGenre: SpotifyTrack = {
-            ...data.track,
-            detectedGenre: detected,
-          };
+        const trackWithGenre: SpotifyTrack = {
+          ...rawTrack,
+          detectedGenre: detected,
+        };
 
-          setCurrentTrack(trackWithGenre);
-          setIsPlaying(data.isPlaying);
+        setCurrentTrack(trackWithGenre);
+        setIsPlaying(isPlayingTrack);
 
-          // Automatically apply detected buff to the game
-          onSelectGenre(detected, trackWithGenre);
-          const buff = MUSIC_BUFFS[detected];
-          setStatusMessage(`Çalan: ${data.track.name} [${buff.name}: ${buff.badge}] otomatik uygulandı!`);
-        } else {
-          setCurrentTrack(null);
-          setIsPlaying(false);
-          setStatusMessage("Şu an Spotify'da bir parça çalmıyor. Müzik açtığında otomatik algılanır.");
-        }
+        // Automatically apply detected buff to the game
+        onSelectGenre(detected, trackWithGenre);
+        const buff = MUSIC_BUFFS[detected];
+        setStatusMessage(`Çalan: ${rawTrack.name} [${buff.name}: ${buff.badge}] otomatik uygulandı!`);
+      } else {
+        setCurrentTrack(null);
+        setIsPlaying(false);
+        setStatusMessage("Şu an Spotify'da bir parça çalmıyor. Müzik açtığında otomatik algılanır.");
       }
     } catch (err: any) {
       console.error('Spotify fetch error:', err);
@@ -229,15 +335,23 @@ export const SpotifyMusicModal: React.FC<SpotifyMusicModalProps> = ({
   const handleConnectSpotify = async () => {
     try {
       setIsConnecting(true);
-      setStatusMessage('Aktif bulut sunucusu otomatik taranıyor ve bağlanılıyor...');
+      setStatusMessage('Spotify giriş sayfasına yönlendiriliyorsunuz...');
 
-      const res = await fetchFromBackend('/api/spotify/auth-url');
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Auth URL alınamadı' }));
-        throw new Error(err.error || 'Auth URL alınamadı');
+      // 1. Direct PKCE flow - creates authorize URL instantly without relying on Vercel
+      let url: string;
+      try {
+        const pkce = await createSpotifyAuthUrl(undefined, redirectUri);
+        url = pkce.authUrl;
+      } catch {
+        // Fallback to backend
+        const res = await fetchFromBackend('/api/spotify/auth-url');
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: 'Auth URL alınamadı' }));
+          throw new Error(err.error || 'Auth URL alınamadı');
+        }
+        const data = await res.json();
+        url = data.url;
       }
-
-      const { url } = await res.json();
 
       // In Android APK, window.open with popup parameters often gets blocked by WebView.
       // On mobile/APK, we open the authorization URL directly in browser / custom tab:
@@ -262,7 +376,7 @@ export const SpotifyMusicModal: React.FC<SpotifyMusicModalProps> = ({
         window.location.href = url;
       }
     } catch (err: any) {
-      setStatusMessage(`Bağlantı hatası: ${err.message}. APK modunda sunucu URL'sinin erişilebilir olduğundan emin olun.`);
+      setStatusMessage(`Bağlantı hatası: ${err.message}`);
       setIsConnecting(false);
     }
   };
@@ -526,25 +640,165 @@ export const SpotifyMusicModal: React.FC<SpotifyMusicModalProps> = ({
               </button>
             )}
 
-            {/* Developer Setup Info if Spotify credentials not configured */}
-            {serverConfigured === false && !isConnected && (
-              <div className="bg-amber-950/40 border border-amber-500/30 rounded-lg p-2.5 text-[11px] text-amber-200 flex flex-col gap-1.5">
-                <div className="flex items-center gap-1 text-amber-400 font-bold">
-                  <Info className="w-3.5 h-3.5 shrink-0" />
-                  <span>Spotify Developer Kurulumu:</span>
+            {/* Active Server Status Bar & Settings Toggle */}
+            <div className="bg-slate-900/70 border border-white/10 rounded-lg p-2 flex flex-col gap-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Server className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span className="text-slate-300 font-medium truncate">
+                    Sunucu: <span className="text-white font-mono text-[10px]">{activeServerUrl ? activeServerUrl.replace(/^https?:\/\//, '') : 'Otomatik / Aynı Domain'}</span>
+                  </span>
                 </div>
-                <p className="text-[10px] text-slate-300 leading-relaxed">
-                  Spotify App ayarlarınızda <strong>Redirect URI</strong> olarak şunu kaydedin:
-                </p>
-                <div className="flex items-center justify-between bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-[9px] text-slate-200">
-                  <span className="truncate mr-2">{redirectUri || `${window.location.origin}/auth/callback`}</span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="flex items-center gap-1 text-[10px]">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        serverHealth?.isOnline
+                          ? 'bg-emerald-400 animate-pulse'
+                          : isCheckingServer
+                          ? 'bg-amber-400 animate-ping'
+                          : 'bg-rose-400'
+                      }`}
+                    />
+                    <span className={serverHealth?.isOnline ? 'text-emerald-400' : 'text-slate-400'}>
+                      {isCheckingServer ? 'Kontrol...' : serverHealth?.isOnline ? 'Çevrimiçi' : 'Çevrimdışı'}
+                    </span>
+                  </span>
                   <button
-                    onClick={copyCallbackUrl}
-                    className="text-amber-400 hover:text-white flex items-center gap-0.5 shrink-0"
+                    onClick={() => {
+                      sounds.playTap();
+                      setShowServerSettings(prev => !prev);
+                    }}
+                    className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                    title="Vercel & Sunucu Ayarları"
                   >
-                    <Copy className="w-3 h-3" />
-                    <span>{copiedUrl ? 'Kopyalandı' : 'Kopyala'}</span>
+                    <Settings2 className="w-3.5 h-3.5" />
                   </button>
+                </div>
+              </div>
+
+              {/* Expandable Vercel / Backend Server Configuration */}
+              {showServerSettings && (
+                <div className="pt-2 border-t border-white/10 flex flex-col gap-2 animate-in fade-in duration-150">
+                  <div className="text-[10px] text-slate-300">
+                    Spotify kimlik doğrulaması ve veri senkronizasyonu için Vercel veya özel sunucu URL'nizi belirleyin:
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={customServerInput}
+                        onChange={e => setCustomServerInput(e.target.value)}
+                        placeholder="https://yksmezunlatest.vercel.app"
+                        className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-[11px] text-white font-mono focus:border-emerald-500 focus:outline-none"
+                      />
+                      <button
+                        onClick={() => handleTestAndSaveServer(customServerInput)}
+                        disabled={testingServer}
+                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-[10px] rounded-lg transition-colors cursor-pointer shrink-0"
+                      >
+                        {testingServer ? 'Test...' : 'Test & Kaydet'}
+                      </button>
+                    </div>
+
+                    {/* Quick Presets */}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[9px] text-slate-400">Hızlı Seçim:</span>
+                      <button
+                        onClick={() => {
+                          setCustomServerInput('https://yksmezunlatest.vercel.app');
+                          handleTestAndSaveServer('https://yksmezunlatest.vercel.app');
+                        }}
+                        className="text-[9px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 transition-colors cursor-pointer"
+                      >
+                        Vercel Sunucusu
+                      </button>
+                      <button
+                        onClick={handleResetToAuto}
+                        className="text-[9px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 transition-colors cursor-pointer"
+                      >
+                        Otomatik Algıla
+                      </button>
+                    </div>
+
+                    {testResult && (
+                      <div className="text-[10px] p-2 rounded bg-slate-950/80 border border-slate-800 leading-snug">
+                        {testResult}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Developer Setup Info if Spotify credentials not configured */}
+            {!isConnected && (
+              <div className="bg-amber-950/40 border border-amber-500/30 rounded-lg p-2.5 text-[11px] text-amber-200 flex flex-col gap-2">
+                <div className="flex items-center justify-between text-amber-400 font-bold">
+                  <span className="flex items-center gap-1">
+                    <Info className="w-3.5 h-3.5 shrink-0" />
+                    <span>Spotify Developer Dashboard Kurulumu:</span>
+                  </span>
+                  <a
+                    href="https://developer.spotify.com/dashboard"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[10px] text-amber-300 hover:text-white underline flex items-center gap-0.5"
+                  >
+                    <span>Paneli Aç</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+
+                <p className="text-[10px] text-slate-300 leading-relaxed">
+                  Spotify App ayarlarınızda (Settings) <strong>Redirect URIs</strong> listesine aşağıdaki adresleri ekleyin:
+                </p>
+
+                {/* LDPlayer / Mobile APK Redirect URI */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] text-sky-400 font-semibold flex items-center gap-1">
+                    <Smartphone className="w-3 h-3" /> LDPlayer & Mobil APK İçin:
+                  </span>
+                  <div className="flex items-center justify-between bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-[9px] text-slate-200">
+                    <span className="truncate mr-2">https://localhost/auth/callback</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText('https://localhost/auth/callback');
+                        sounds.playTap();
+                        setStatusMessage('https://localhost/auth/callback kopyalandı!');
+                      }}
+                      className="text-amber-400 hover:text-white flex items-center gap-0.5 shrink-0 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>Kopyala</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Vercel / Web Redirect URI */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] text-emerald-400 font-semibold flex items-center gap-1">
+                    <Globe className="w-3 h-3" /> Vercel & Web Tarayıcı İçin:
+                  </span>
+                  <div className="flex items-center justify-between bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-[9px] text-slate-200">
+                    <span className="truncate mr-2">https://yksmezunlatest.vercel.app/auth/callback</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText('https://yksmezunlatest.vercel.app/auth/callback');
+                        sounds.playTap();
+                        setStatusMessage('https://yksmezunlatest.vercel.app/auth/callback kopyalandı!');
+                      }}
+                      className="text-amber-400 hover:text-white flex items-center gap-0.5 shrink-0 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>Kopyala</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[9px] text-slate-400 bg-slate-900/60 rounded p-1.5 border border-white/5">
+                  💡 <strong>İpucu:</strong> Spotify Developer paneline bu iki adresi de eklerseniz hem emülatörde/telefonda hem de bilgisayarda tek tıkla doğrudan bağlanabilirsiniz.
                 </div>
               </div>
             )}
